@@ -1,0 +1,8 @@
+{
+  "appId": "com.nithin.lightningtv",
+  "appName": "Lightning TV App",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "http"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "com.nithin.lightningtv",
+  "version": "1.0.0",
+  "type": "web",
+  "title": "Lightning TV",
+  "main": "index.html",
+  "icon": "assets/logo.png",
+  "vendor": "Nithin",
+  "resolution": "1920x1080"
+}

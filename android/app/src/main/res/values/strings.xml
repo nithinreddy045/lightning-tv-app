@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Lightning TV App</string>
+    <string name="title_activity_main">Lightning TV App</string>
+    <string name="package_name">com.nithin.lightningtv</string>
+    <string name="custom_url_scheme">com.nithin.lightningtv</string>
+</resources>
