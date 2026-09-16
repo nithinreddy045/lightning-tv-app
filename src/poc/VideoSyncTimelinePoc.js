@@ -364,38 +364,18 @@ togglePlayPause() {
       // FULL SCREEN
       // ----------------------------------------------------------
 
-      video.style.position =
-        'fixed'
-
-      video.style.left =
-        '0px'
-
-      video.style.top =
-        '0px'
-
-      video.style.width =
-        '100vw'
-
-      video.style.height =
-        '100vh'
-
-      video.style.margin =
-        '0'
-
-      video.style.padding =
-        '0'
-
-      // Fill the complete TV screen.
-      video.style.objectFit =
-        'contain'
-
-      video.style.backgroundColor =
-        '#000000'
-
-      // Keep video behind the Blits timeline.
-      video.style.zIndex =
-        '0'
-
+// VIDEO LAYOUT
+// VIDEO LAYOUT
+video.style.position = 'fixed'
+video.style.left = '40px'
+video.style.top = '100px'
+video.style.width = 'calc(100vw - 80px)'
+video.style.height = 'auto'
+video.style.aspectRatio = '16 / 9'
+video.style.objectFit = 'contain'
+video.style.aspectRatio = '16 / 9'
+video.style.backgroundColor = '#000000'
+video.style.zIndex = '10'  
       // ----------------------------------------------------------
       // PLAYBACK
       // ----------------------------------------------------------
@@ -503,40 +483,80 @@ this.timelineOverlay =
       )
 
       this.video.addEventListener(
-        'canplay',
-        () => {
-          console.log(
-            'POC: VIDEO CAN PLAY'
-          )
+  'canplay',
+  () => {
+    console.log(
+      'POC: VIDEO CAN PLAY'
+    )
 
-          this.statusText =
-            'Video ready'
+    this.statusText =
+      'Video ready'
 
-          if (!this.initialSyncDone) {
-            this.syncToCommonTimeline(
-              'INITIAL_CAN_PLAY'
-            )
+    // ----------------------------------------------------------
+    // INITIAL SYNCHRONIZATION
+    // ----------------------------------------------------------
 
-            this.initialSyncDone =
-              true
-
-            return
-          }
-
-          if (this.buffering) {
-            console.log(
-              'POC: VIDEO RECOVERED FROM BUFFERING'
-            )
-
-            this.syncToCommonTimeline(
-              'BUFFER_RECOVERY'
-            )
-          }
-
-          this.updateTimelineDisplay()
-        }
+    if (!this.initialSyncDone) {
+      console.log(
+        'POC: INITIAL SYNC START'
       )
 
+      this.syncToCommonTimeline(
+        'INITIAL_CAN_PLAY'
+      )
+
+      // Give the browser/HLS a moment to apply
+      // the initial seek before marking sync complete.
+      setTimeout(() => {
+        if (!this.video) {
+          return
+        }
+
+        console.log(
+          'POC: INITIAL SYNC RESULT:',
+          {
+            currentPosition:
+              this.video.currentTime,
+
+            targetPosition:
+              this.getLoopPosition(
+                this.video.duration
+              ),
+
+            drift:
+              this.video.currentTime -
+              this.getLoopPosition(
+                this.video.duration
+              )
+          }
+        )
+
+        this.initialSyncDone =
+          true
+
+        this.updateTimelineDisplay()
+      }, 500)
+
+      return
+    }
+
+    // ----------------------------------------------------------
+    // BUFFER RECOVERY
+    // ----------------------------------------------------------
+
+    if (this.buffering) {
+      console.log(
+        'POC: VIDEO RECOVERED FROM BUFFERING'
+      )
+
+      this.syncToCommonTimeline(
+        'BUFFER_RECOVERY'
+      )
+    }
+
+    this.updateTimelineDisplay()
+  }
+)
       this.video.addEventListener(
         'playing',
         () => {
@@ -550,10 +570,7 @@ this.timelineOverlay =
           this.statusText =
             'Playing'
 
-          this.syncToCommonTimeline(
-            'PLAYING'
-          )
-
+        
           this.updateTimelineDisplay()
         }
       )
@@ -662,120 +679,172 @@ this.timelineOverlay =
     // ============================================================
     // SYNCHRONIZE TO COMMON TIMELINE
     // ============================================================
+resetPlaybackRate() {
+  if (
+    this.video &&
+    this.video.playbackRate !== 1
+  ) {
+    this.video.playbackRate = 1
+  }
+},
 
-    syncToCommonTimeline(reason) {
-      if (
-        !this.video ||
-        !this.commonTimelineRunning
-      ) {
-        return
-      }
-
-      if (this.syncInProgress) {
-        return
-      }
-
-      const duration =
-        this.video.duration
-
-      if (
-        !Number.isFinite(duration) ||
-        duration <= 0
-      ) {
-        return
-      }
-
-      const commonPosition =
-        this.getCommonPosition()
-
-      const targetPosition =
-        this.getLoopPosition(
-          duration
-        )
-
-      const currentPosition =
-        this.video.currentTime
-
-      const drift =
-        Math.abs(
-          currentPosition -
-          targetPosition
-        )
-
-      const SYNC_THRESHOLD =
-        0.2
-
-      console.log(
-        'POC: COMMON TIMELINE SYNC:',
-        {
-          reason,
-          commonPosition,
-          duration,
-          currentPosition,
-          targetPosition,
-          drift,
-        }
-      )
-
-      if (
-        drift <= SYNC_THRESHOLD
-      ) {
-        if (
-           this.video.paused &&
-           !this.buffering &&
-           !this.userPaused
-           ) {
-          this.video.play().catch(
-            (error) => {
-              console.error(
-                'PLAY FAILED:',
-                error
-              )
-            }
-          )
-        }
-
-        return
-      }
-
-      this.syncInProgress =
-        true
-
-      try {
-        console.log(
-          'POC: SEEKING TO:',
-          targetPosition
-        )
-
-        this.video.currentTime =
-          targetPosition
-      } catch (error) {
+resumeIfDue() {
+  if (
+    this.video &&
+    this.video.paused &&
+    !this.buffering &&
+    !this.userPaused
+  ) {
+    this.video.play().catch(
+      (error) => {
         console.error(
-          'FAILED TO SET CURRENT TIME:',
+          'PLAY FAILED:',
           error
         )
       }
+    )
+  }
+},
+    syncToCommonTimeline(reason) {
+  if (
+    !this.video ||
+    !this.commonTimelineRunning
+  ) {
+    return
+  }
 
-      this.syncInProgress =
-        false
+  if (this.syncInProgress) {
+    return
+  }
 
-      if (
-         this.video.paused &&
-         !this.buffering &&
-         !this.userPaused
-          ) {
-        this.video.play().catch(
-          (error) => {
-            console.error(
-              'PLAY AFTER SYNC FAILED:',
-              error
-            )
-          }
-        )
-      }
+  // Don't fight an active rebuffer.
+  // Let the player recover first.
+  if (
+    this.buffering &&
+    reason !== 'INITIAL_CAN_PLAY'
+  ) {
+    return
+  }
 
-      this.updateTimelineDisplay()
-    },
+  const duration =
+    this.video.duration
+
+  if (
+    !Number.isFinite(duration) ||
+    duration <= 0
+  ) {
+    return
+  }
+
+  const commonPosition =
+    this.getCommonPosition()
+
+  const targetPosition =
+    this.getLoopPosition(
+      duration
+    )
+
+  const currentPosition =
+    this.video.currentTime
+
+  const drift =
+    currentPosition - targetPosition
+
+  const absDrift =
+    Math.abs(drift)
+
+  // Below this, no correction is needed.
+  const SYNC_THRESHOLD =
+    0.2
+
+  // Between 0.2 and 2 seconds,
+  // correct using playback speed.
+  const RATE_CORRECT_THRESHOLD =
+    2
+
+  const RATE_FAST =
+    1.05
+
+  const RATE_SLOW =
+    0.95
+
+  console.log(
+    'POC: COMMON TIMELINE SYNC:',
+    {
+      reason,
+      commonPosition,
+      duration,
+      currentPosition,
+      targetPosition,
+      drift,
+    }
+  )
+
+  // ------------------------------------------------------------
+  // 1. SMALL DRIFT
+  // ------------------------------------------------------------
+
+  if (
+    absDrift <= SYNC_THRESHOLD
+  ) {
+    this.resetPlaybackRate()
+
+    this.resumeIfDue()
+
+    return
+  }
+
+  // ------------------------------------------------------------
+  // 2. DRIFT BETWEEN 0.2 AND 2 SECONDS
+  // ------------------------------------------------------------
+
+  if (
+    absDrift <= RATE_CORRECT_THRESHOLD
+  ) {
+    // Video is ahead -> slow down.
+    // Video is behind -> speed up.
+
+    this.video.playbackRate =
+      drift > 0
+        ? RATE_SLOW
+        : RATE_FAST
+
+    this.resumeIfDue()
+
+    return
+  }
+
+  // ------------------------------------------------------------
+  // 3. DRIFT GREATER THAN 2 SECONDS
+  // ------------------------------------------------------------
+
+  this.resetPlaybackRate()
+
+  this.syncInProgress =
+    true
+
+  try {
+    console.log(
+      'POC: SEEKING TO:',
+      targetPosition
+    )
+
+    this.video.currentTime =
+      targetPosition
+  } catch (error) {
+    console.error(
+      'FAILED TO SET CURRENT TIME:',
+      error
+    )
+  }
+
+  this.syncInProgress =
+    false
+
+  this.resumeIfDue()
+
+  this.updateTimelineDisplay()
+},
 
     // ============================================================
     // LOAD HLS VIDEO
@@ -846,9 +915,9 @@ this.timelineOverlay =
           Hls.Events.ERROR,
           (event, data) => {
             console.error(
-              'POC: HLS ERROR:',
-              data
-            )
+  'POC: HLS ERROR:',
+  JSON.stringify(data)
+)
 
             if (
               !data ||
