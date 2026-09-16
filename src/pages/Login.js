@@ -1,5 +1,6 @@
 import Blits from '@lightningjs/blits'
 import Input from '../components/Input.js'
+import { getSyncServerUrl } from '../utils/syncServer.js'
 
 export default Blits.Component('Login', {
   components: {
@@ -459,7 +460,6 @@ export default Blits.Component('Login', {
     </Element>
   `,
 
-
   // =====================================================
   // STATE
   // =====================================================
@@ -477,7 +477,6 @@ export default Blits.Component('Login', {
     }
   },
 
-
   // =====================================================
   // READY
   // =====================================================
@@ -488,21 +487,17 @@ export default Blits.Component('Login', {
     },
   },
 
-
   // =====================================================
   // INPUT
   // =====================================================
 
   input: {
-
     // ---------------------------------------------------
     // UP
     // ---------------------------------------------------
 
     up() {
-
       if (this.activeField === 'password') {
-
         this.activeField = 'email'
 
         this.loginButtonFocused = false
@@ -512,9 +507,7 @@ export default Blits.Component('Login', {
         return
       }
 
-
       if (this.activeField === 'login') {
-
         this.activeField = 'password'
 
         this.loginButtonFocused = false
@@ -525,15 +518,12 @@ export default Blits.Component('Login', {
       }
     },
 
-
     // ---------------------------------------------------
     // DOWN
     // ---------------------------------------------------
 
     down() {
-
       if (this.activeField === 'email') {
-
         this.activeField = 'password'
 
         this.$select('passwordInput').$focus()
@@ -541,9 +531,7 @@ export default Blits.Component('Login', {
         return
       }
 
-
       if (this.activeField === 'password') {
-
         this.activeField = 'login'
 
         this.loginButtonFocused = true
@@ -551,16 +539,13 @@ export default Blits.Component('Login', {
         return
       }
     },
-
 
     // ---------------------------------------------------
     // ENTER
     // ---------------------------------------------------
 
     enter() {
-
       if (this.activeField === 'email') {
-
         this.activeField = 'password'
 
         this.$select('passwordInput').$focus()
@@ -568,9 +553,7 @@ export default Blits.Component('Login', {
         return
       }
 
-
       if (this.activeField === 'password') {
-
         this.activeField = 'login'
 
         this.loginButtonFocused = true
@@ -578,66 +561,51 @@ export default Blits.Component('Login', {
         return
       }
 
-
       if (this.activeField === 'login') {
-
         this.login()
       }
     },
-
 
     // ---------------------------------------------------
     // BACKSPACE
     // ---------------------------------------------------
 
     back() {
-
       if (this.activeField === 'email') {
-
         this.email = this.email.slice(0, -1)
 
         return
       }
 
-
       if (this.activeField === 'password') {
-
         this.password = this.password.slice(0, -1)
       }
     },
-
 
     // ---------------------------------------------------
     // SPACE
     // ---------------------------------------------------
 
     space() {
-
       if (this.activeField === 'email') {
-
         this.email += ' '
 
         return
       }
 
-
       if (this.activeField === 'password') {
-
         this.password += ' '
       }
     },
-
 
     // ---------------------------------------------------
     // NORMAL CHARACTERS
     // ---------------------------------------------------
 
     any(e) {
-
       const key = e.key
 
       console.log('Login received key:', key)
-
 
       if (
         key === 'ArrowUp' ||
@@ -648,101 +616,66 @@ export default Blits.Component('Login', {
         key === 'Backspace' ||
         key === 'Escape'
       ) {
-
         return
       }
-
 
       if (!key || key.length === 0) {
-
         return
       }
-
 
       if (key.length > 1) {
-
         return
       }
 
-
       if (this.activeField === 'email') {
-
         this.email += key
 
         return
       }
 
-
       if (this.activeField === 'password') {
-
         this.password += key
       }
     },
   },
-
 
   // =====================================================
   // METHODS
   // =====================================================
 
   methods: {
-
     async login() {
+      console.log('LOGIN CLICKED')
 
-  console.log('LOGIN CLICKED')
+      console.log('Email:', this.email)
 
-  console.log('Email:', this.email)
+      console.log('Password:', this.password)
 
-  console.log('Password:', this.password)
+      const validEmail = 'nithin@example.com'
 
+      const validPassword = '123456'
 
-  const validEmail = 'nithin@example.com'
+      if (this.email === validEmail && this.password === validPassword) {
+        this.errorMessage = ''
 
-  const validPassword = '123456'
+        console.log('Login successful')
 
+        try {
+          const response = await fetch(getSyncServerUrl())
 
-  if (
-    this.email === validEmail &&
-    this.password === validPassword
-  ) {
+          const session = await response.json()
 
-    this.errorMessage = ''
+          console.log('COMMON TIMELINE FROM SYNC SERVER:', session.commonTimelineStart)
 
-    console.log('Login successful')
+          this.$router.to('/poc')
+        } catch (error) {
+          console.error('FAILED TO CONNECT TO SYNC SERVER:', error)
 
-    try {
-
-      const response = await fetch(
-        'http://192.168.29.250:3001/session'
-      )
-
-      const session = await response.json()
-
-      console.log(
-        'COMMON TIMELINE FROM SYNC SERVER:',
-        session.commonTimelineStart
-      )
-
-      this.$router.to('/poc')
-
-    } catch (error) {
-
-      console.error(
-        'FAILED TO CONNECT TO SYNC SERVER:',
-        error
-      )
-
-      this.errorMessage =
-        'Unable to connect to sync server'
-
-    }
-
-  } else {
-
-    this.errorMessage = 'Invalid email or password'
-
-  }
-
-},
-},
+          this.errorMessage = 'Unable to connect to sync server'
+        }
+      } else {
+        this.errorMessage = 'Invalid email or password'
+      }
+    },
+  },
 })

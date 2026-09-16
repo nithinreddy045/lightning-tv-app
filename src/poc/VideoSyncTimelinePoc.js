@@ -1,6 +1,8 @@
 import Blits from '@lightningjs/blits'
 import Hls from 'hls.js'
 
+import { getSyncServerUrl } from '../utils/syncServer.js'
+
 const VIDEO_URL =
   'https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8'
 
@@ -79,8 +81,7 @@ export default Blits.Component('VideoSyncTimelinePoc', {
         'DRIFT\n0.00 sec\n\n' +
         'STATUS\nLOADING',
 
-      instructionText:
-        'Common timeline synchronization POC',
+      instructionText: 'Common timeline synchronization POC',
 
       video: null,
       timelineOverlay: null,
@@ -88,6 +89,8 @@ export default Blits.Component('VideoSyncTimelinePoc', {
       hls: null,
 
       timelineInterval: null,
+
+      clockResyncInterval: null,
 
       commonTimelineStart: null,
 
@@ -107,17 +110,11 @@ export default Blits.Component('VideoSyncTimelinePoc', {
 
   hooks: {
     async ready() {
-      console.log(
-        '================================================'
-      )
+      console.log('================================================')
 
-      console.log(
-        'HLS VIDEO SYNC POC READY'
-      )
+      console.log('HLS VIDEO SYNC POC READY')
 
-      console.log(
-        '================================================'
-      )
+      console.log('================================================')
 
       await this.startCommonTimeline()
 
@@ -127,192 +124,191 @@ export default Blits.Component('VideoSyncTimelinePoc', {
     },
 
     destroy() {
-      console.log(
-        'HLS VIDEO SYNC POC DESTROY'
-      )
+      console.log('HLS VIDEO SYNC POC DESTROY')
 
       this.stopTimelineLogging()
+
+      this.stopClockResync()
 
       this.removeVideo()
     },
   },
-// input: {
-//   space() {
-//     this.togglePlayPause()
-//   },
+  // input: {
+  //   space() {
+  //     this.togglePlayPause()
+  //   },
 
-//   any(e) {
-//     // Android TV Play/Pause key
-//     if (
-//       e.keyCode === 85 ||
-//       e.key === 'MediaPlayPause'
-//     ) {
-//       this.togglePlayPause()
-//     }
-//   },
-// },
+  //   any(e) {
+  //     // Android TV Play/Pause key
+  //     if (
+  //       e.keyCode === 85 ||
+  //       e.key === 'MediaPlayPause'
+  //     ) {
+  //       this.togglePlayPause()
+  //     }
+  //   },
+  // },
   methods: {
     // ============================================================
     // COMMON TIMELINE
     // ============================================================
-togglePlayPause() {
-  if (!this.video) {
-    return
-  }
+    togglePlayPause() {
+      if (!this.video) {
+        return
+      }
 
-  if (this.video.paused) {
-    console.log(
-      'POC: MANUAL PLAY - SYNCING TO COMMON TIMELINE'
-    )
+      if (this.video.paused) {
+        console.log('POC: MANUAL PLAY - SYNCING TO COMMON TIMELINE')
 
-    this.userPaused = false
+        this.userPaused = false
 
-    this.syncToCommonTimeline(
-      'MANUAL_PLAY'
-    )
+        this.syncToCommonTimeline('MANUAL_PLAY')
 
-    return
-  }
+        return
+      }
 
-  console.log(
-    'POC: MANUAL PAUSE'
-  )
+      console.log('POC: MANUAL PAUSE')
 
-  this.userPaused = true
+      this.userPaused = true
 
-  this.video.pause()
+      this.video.pause()
 
-  this.statusText = 'Paused'
+      this.statusText = 'Paused'
 
-  this.updateTimelineDisplay()
-},
+      this.updateTimelineDisplay()
+    },
+    async fetchSyncSession() {
+      const response = await fetch(getSyncServerUrl())
+
+      if (!response.ok) {
+        throw new Error(`Sync server returned HTTP ${response.status}`)
+      }
+
+      const session = await response.json()
+
+      const commonTimelineStart = Number(session.commonTimelineStart)
+
+      const serverNow = Number(session.serverNow)
+
+      if (!Number.isFinite(commonTimelineStart) || !Number.isFinite(serverNow)) {
+        throw new Error('Invalid session data from sync server')
+      }
+
+      return {
+        commonTimelineStart,
+        serverNow,
+      }
+    },
+
+    delay(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms))
+    },
+
     async startCommonTimeline() {
       if (this.commonTimelineRunning) {
         return
       }
 
-      console.log(
-        'POC: GETTING COMMON TIMELINE FROM SYNC SERVER'
-      )
+      console.log('POC: GETTING COMMON TIMELINE FROM SYNC SERVER')
 
-      try {
-        const response = await fetch(
-          'http://192.168.29.250:3001/session'
-        )
+      const MAX_RETRIES = 5
 
-        if (!response.ok) {
-          throw new Error(
-            `Sync server returned HTTP ${response.status}`
-          )
-        }
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const { commonTimelineStart, serverNow } = await this.fetchSyncSession()
 
-        const session =
-          await response.json()
+          const localNow = Date.now()
 
-        const commonTimelineStart =
-          Number(
-            session.commonTimelineStart
-          )
+          const serverOffset = serverNow - localNow
 
-        const serverNow =
-          Number(
-            session.serverNow
-          )
+          this.commonTimelineStart = commonTimelineStart
 
-        const localNow =
-          Date.now()
+          this.serverClockOffset = serverOffset
 
-        if (
-          !Number.isFinite(
-            commonTimelineStart
-          ) ||
-          !Number.isFinite(
-            serverNow
-          )
-        ) {
-          throw new Error(
-            'Invalid session data from sync server'
-          )
-        }
+          this.commonTimelineRunning = true
 
-        const serverOffset =
-          serverNow - localNow
+          const currentCommonPosition = (serverNow - commonTimelineStart) / 1000
 
-        this.commonTimelineStart =
-          commonTimelineStart
-
-        this.serverClockOffset =
-          serverOffset
-
-        this.commonTimelineRunning =
-          true
-
-        const currentCommonPosition =
-          (
-            serverNow -
-            commonTimelineStart
-          ) / 1000
-
-        console.log(
-          'COMMON TIMELINE CLOCK SYNC:',
-          {
+          console.log('COMMON TIMELINE CLOCK SYNC:', {
             commonTimelineStart,
             serverNow,
             localNow,
             serverOffset,
             currentCommonPosition,
+          })
+
+          this.startClockResync()
+
+          return
+        } catch (error) {
+          console.error(`FAILED TO GET COMMON TIMELINE (attempt ${attempt}/${MAX_RETRIES}):`, error)
+
+          this.statusText =
+            attempt < MAX_RETRIES
+              ? `Unable to connect to sync server, retrying (${attempt}/${MAX_RETRIES})...`
+              : 'Unable to connect to sync server'
+
+          if (attempt < MAX_RETRIES) {
+            await this.delay(1000 * attempt)
           }
-        )
+        }
+      }
+    },
 
+    async resyncServerClock() {
+      if (!this.commonTimelineRunning) {
+        return
+      }
+
+      try {
+        const { serverNow } = await this.fetchSyncSession()
+
+        const localNow = Date.now()
+
+        this.serverClockOffset = serverNow - localNow
+
+        console.log('POC: SERVER CLOCK RESYNCED', this.serverClockOffset)
       } catch (error) {
-        console.error(
-          'FAILED TO GET COMMON TIMELINE:',
-          error
-        )
+        console.error('POC: SERVER CLOCK RESYNC FAILED:', error)
+      }
+    },
 
-        this.statusText =
-          'Unable to connect to sync server'
+    startClockResync() {
+      this.stopClockResync()
+
+      this.clockResyncInterval = setInterval(() => {
+        this.resyncServerClock()
+      }, 60000)
+    },
+
+    stopClockResync() {
+      if (this.clockResyncInterval) {
+        clearInterval(this.clockResyncInterval)
+
+        this.clockResyncInterval = null
       }
     },
 
     getCommonPosition() {
-      if (
-        !this.commonTimelineRunning ||
-        this.commonTimelineStart === null
-      ) {
+      if (!this.commonTimelineRunning || this.commonTimelineStart === null) {
         return 0
       }
 
-      const synchronizedNow =
-        Date.now() +
-        this.serverClockOffset
+      const synchronizedNow = Date.now() + this.serverClockOffset
 
-      const commonPosition =
-        (
-          synchronizedNow -
-          this.commonTimelineStart
-        ) / 1000
+      const commonPosition = (synchronizedNow - this.commonTimelineStart) / 1000
 
-      return Math.max(
-        0,
-        commonPosition
-      )
+      return Math.max(0, commonPosition)
     },
 
     getLoopPosition(duration) {
-      const commonPosition =
-        this.getCommonPosition()
+      const commonPosition = this.getCommonPosition()
 
-      if (
-        !Number.isFinite(duration) ||
-        duration <= 0
-      ) {
+      if (!Number.isFinite(duration) || duration <= 0) {
         return 0
       }
 
-      return (
-        commonPosition % duration
-      )
+      return commonPosition % duration
     },
 
     // ============================================================
@@ -320,29 +316,17 @@ togglePlayPause() {
     // ============================================================
 
     formatTime(seconds) {
-      if (
-        !Number.isFinite(seconds) ||
-        seconds < 0
-      ) {
+      if (!Number.isFinite(seconds) || seconds < 0) {
         return '00:00'
       }
 
-      const totalSeconds =
-        Math.floor(seconds)
+      const totalSeconds = Math.floor(seconds)
 
-      const minutes =
-        Math.floor(
-          totalSeconds / 60
-        )
+      const minutes = Math.floor(totalSeconds / 60)
 
-      const remainingSeconds =
-        totalSeconds % 60
+      const remainingSeconds = totalSeconds % 60
 
-      return (
-        String(minutes).padStart(2, '0') +
-        ':' +
-        String(remainingSeconds).padStart(2, '0')
-      )
+      return String(minutes).padStart(2, '0') + ':' + String(remainingSeconds).padStart(2, '0')
     },
 
     // ============================================================
@@ -350,104 +334,80 @@ togglePlayPause() {
     // ============================================================
 
     createVideo() {
-      console.log(
-        'POC: CREATING HTML5 VIDEO'
-      )
+      console.log('POC: CREATING HTML5 VIDEO')
 
-      const video =
-        document.createElement('video')
+      const video = document.createElement('video')
 
-      video.id =
-        'hls-video-sync-poc'
+      video.id = 'hls-video-sync-poc'
 
       // ----------------------------------------------------------
       // FULL SCREEN
       // ----------------------------------------------------------
 
-// VIDEO LAYOUT
-// VIDEO LAYOUT
-video.style.position = 'fixed'
-video.style.left = '40px'
-video.style.top = '100px'
-video.style.width = 'calc(100vw - 80px)'
-video.style.height = 'auto'
-video.style.aspectRatio = '16 / 9'
-video.style.objectFit = 'contain'
-video.style.aspectRatio = '16 / 9'
-video.style.backgroundColor = '#000000'
-video.style.zIndex = '10'  
+      // VIDEO LAYOUT
+      // VIDEO LAYOUT
+      video.style.position = 'fixed'
+      video.style.left = '40px'
+      video.style.top = '100px'
+      video.style.width = 'calc(100vw - 80px)'
+      video.style.height = 'auto'
+      video.style.aspectRatio = '16 / 9'
+      video.style.objectFit = 'contain'
+      video.style.aspectRatio = '16 / 9'
+      video.style.backgroundColor = '#000000'
+      video.style.zIndex = '10'
       // ----------------------------------------------------------
       // PLAYBACK
       // ----------------------------------------------------------
 
-      video.autoplay =
-        true
+      video.autoplay = true
 
-      video.muted =
-        true
+      video.muted = true
 
       // No native controls.
-      video.controls =
-        false
+      video.controls = false
 
-      video.playsInline =
-        true
+      video.playsInline = true
 
-      video.preload =
-        'auto'
+      video.preload = 'auto'
 
       // We calculate looping ourselves
       // from the common timeline.
-      video.loop =
-        false
+      video.loop = false
 
-      this.video =
-        video
+      this.video = video
 
-      document.body.appendChild(
-        video
-      )
+      document.body.appendChild(video)
       const timelineOverlay = document.createElement('div')
 
-timelineOverlay.id = 'video-sync-timeline-overlay'
+      timelineOverlay.id = 'video-sync-timeline-overlay'
 
-timelineOverlay.style.position = 'fixed'
-timelineOverlay.style.left = '40px'
-timelineOverlay.style.top = '40px'
-timelineOverlay.style.width = '420px'
-timelineOverlay.style.padding = '20px'
-timelineOverlay.style.boxSizing = 'border-box'
+      timelineOverlay.style.position = 'fixed'
+      timelineOverlay.style.left = '40px'
+      timelineOverlay.style.top = '40px'
+      timelineOverlay.style.width = '420px'
+      timelineOverlay.style.padding = '20px'
+      timelineOverlay.style.boxSizing = 'border-box'
 
-timelineOverlay.style.backgroundColor =
-  'rgba(0, 0, 0, 0.75)'
+      timelineOverlay.style.backgroundColor = 'rgba(0, 0, 0, 0.75)'
 
-timelineOverlay.style.color =
-  '#ffffff'
+      timelineOverlay.style.color = '#ffffff'
 
-timelineOverlay.style.fontFamily =
-  'Arial, sans-serif'
+      timelineOverlay.style.fontFamily = 'Arial, sans-serif'
 
-timelineOverlay.style.fontSize =
-  '26px'
+      timelineOverlay.style.fontSize = '26px'
 
-timelineOverlay.style.lineHeight =
-  '1.5'
+      timelineOverlay.style.lineHeight = '1.5'
 
-timelineOverlay.style.zIndex =
-  '9999'
+      timelineOverlay.style.zIndex = '9999'
 
-timelineOverlay.style.borderRadius =
-  '8px'
+      timelineOverlay.style.borderRadius = '8px'
 
-timelineOverlay.style.pointerEvents =
-  'none'
+      timelineOverlay.style.pointerEvents = 'none'
 
-document.body.appendChild(
-  timelineOverlay
-)
+      document.body.appendChild(timelineOverlay)
 
-this.timelineOverlay =
-  timelineOverlay
+      this.timelineOverlay = timelineOverlay
 
       this.attachVideoEvents()
 
@@ -463,388 +423,244 @@ this.timelineOverlay =
         return
       }
 
-      this.video.addEventListener(
-        'loadedmetadata',
-        () => {
-          console.log(
-            'POC: VIDEO METADATA LOADED'
-          )
+      this.video.addEventListener('loadedmetadata', () => {
+        console.log('POC: VIDEO METADATA LOADED')
 
-          console.log(
-            'VIDEO DURATION:',
-            this.video.duration
-          )
+        console.log('VIDEO DURATION:', this.video.duration)
 
-          this.statusText =
-            'Video metadata loaded'
+        this.statusText = 'Video metadata loaded'
 
-          this.updateTimelineDisplay()
-        }
-      )
+        this.updateTimelineDisplay()
+      })
 
-      this.video.addEventListener(
-  'canplay',
-  () => {
-    console.log(
-      'POC: VIDEO CAN PLAY'
-    )
+      this.video.addEventListener('canplay', () => {
+        console.log('POC: VIDEO CAN PLAY')
 
-    this.statusText =
-      'Video ready'
+        this.statusText = 'Video ready'
 
-    // ----------------------------------------------------------
-    // INITIAL SYNCHRONIZATION
-    // ----------------------------------------------------------
+        // ----------------------------------------------------------
+        // INITIAL SYNCHRONIZATION
+        // ----------------------------------------------------------
 
-    if (!this.initialSyncDone) {
-      console.log(
-        'POC: INITIAL SYNC START'
-      )
+        if (!this.initialSyncDone) {
+          console.log('POC: INITIAL SYNC START')
 
-      this.syncToCommonTimeline(
-        'INITIAL_CAN_PLAY'
-      )
+          this.syncToCommonTimeline('INITIAL_CAN_PLAY')
 
-      // Give the browser/HLS a moment to apply
-      // the initial seek before marking sync complete.
-      setTimeout(() => {
-        if (!this.video) {
+          // Give the browser/HLS a moment to apply
+          // the initial seek before marking sync complete.
+          setTimeout(() => {
+            if (!this.video) {
+              return
+            }
+
+            console.log('POC: INITIAL SYNC RESULT:', {
+              currentPosition: this.video.currentTime,
+
+              targetPosition: this.getLoopPosition(this.video.duration),
+
+              drift: this.video.currentTime - this.getLoopPosition(this.video.duration),
+            })
+
+            this.initialSyncDone = true
+
+            this.updateTimelineDisplay()
+          }, 500)
+
           return
         }
 
-        console.log(
-          'POC: INITIAL SYNC RESULT:',
-          {
-            currentPosition:
-              this.video.currentTime,
+        // ----------------------------------------------------------
+        // BUFFER RECOVERY
+        // ----------------------------------------------------------
 
-            targetPosition:
-              this.getLoopPosition(
-                this.video.duration
-              ),
+        if (this.buffering) {
+          console.log('POC: VIDEO RECOVERED FROM BUFFERING')
 
-            drift:
-              this.video.currentTime -
-              this.getLoopPosition(
-                this.video.duration
-              )
-          }
-        )
-
-        this.initialSyncDone =
-          true
+          this.syncToCommonTimeline('BUFFER_RECOVERY')
+        }
 
         this.updateTimelineDisplay()
-      }, 500)
+      })
+      this.video.addEventListener('playing', () => {
+        console.log('POC: VIDEO PLAYING')
 
-      return
-    }
+        this.buffering = false
 
-    // ----------------------------------------------------------
-    // BUFFER RECOVERY
-    // ----------------------------------------------------------
+        this.statusText = 'Playing'
 
-    if (this.buffering) {
-      console.log(
-        'POC: VIDEO RECOVERED FROM BUFFERING'
-      )
+        this.updateTimelineDisplay()
+      })
 
-      this.syncToCommonTimeline(
-        'BUFFER_RECOVERY'
-      )
-    }
+      this.video.addEventListener('waiting', () => {
+        console.log('POC: VIDEO BUFFERING')
 
-    this.updateTimelineDisplay()
-  }
-)
-      this.video.addEventListener(
-        'playing',
-        () => {
-          console.log(
-            'POC: VIDEO PLAYING'
-          )
+        console.log('COMMON TIMELINE CONTINUES:', this.getCommonPosition())
 
-          this.buffering =
-            false
+        this.buffering = true
 
-          this.statusText =
-            'Playing'
+        this.statusText = 'Buffering'
 
-        
-          this.updateTimelineDisplay()
+        this.updateTimelineDisplay()
+      })
+
+      this.video.addEventListener('stalled', () => {
+        console.log('POC: VIDEO STALLED')
+
+        this.buffering = true
+
+        this.statusText = 'Network stalled'
+
+        this.updateTimelineDisplay()
+      })
+
+      this.video.addEventListener('ended', () => {
+        console.log('POC: VIDEO ENDED')
+
+        console.log('COMMON TIMELINE:', this.getCommonPosition())
+
+        // Never simply go to zero.
+        // Calculate the current loop position.
+        this.syncToCommonTimeline('VIDEO_ENDED')
+
+        if (this.video && this.video.paused) {
+          this.video.play().catch((error) => {
+            console.error('PLAY AFTER LOOP FAILED:', error)
+          })
         }
-      )
+      })
 
-      this.video.addEventListener(
-        'waiting',
-        () => {
-          console.log(
-            'POC: VIDEO BUFFERING'
-          )
+      this.video.addEventListener('timeupdate', () => {
+        this.updateTimelineDisplay()
+      })
 
-          console.log(
-            'COMMON TIMELINE CONTINUES:',
-            this.getCommonPosition()
-          )
+      this.video.addEventListener('error', (event) => {
+        console.error('POC: VIDEO ERROR:', event)
 
-          this.buffering =
-            true
+        console.error('VIDEO ERROR OBJECT:', this.video.error)
 
-          this.statusText =
-            'Buffering'
+        this.statusText = 'Video error'
 
-          this.updateTimelineDisplay()
-        }
-      )
-
-      this.video.addEventListener(
-        'stalled',
-        () => {
-          console.log(
-            'POC: VIDEO STALLED'
-          )
-
-          this.buffering =
-            true
-
-          this.statusText =
-            'Network stalled'
-
-          this.updateTimelineDisplay()
-        }
-      )
-
-      this.video.addEventListener(
-        'ended',
-        () => {
-          console.log(
-            'POC: VIDEO ENDED'
-          )
-
-          console.log(
-            'COMMON TIMELINE:',
-            this.getCommonPosition()
-          )
-
-          // Never simply go to zero.
-          // Calculate the current loop position.
-          this.syncToCommonTimeline(
-            'VIDEO_ENDED'
-          )
-
-          if (
-            this.video &&
-            this.video.paused
-          ) {
-            this.video.play().catch(
-              (error) => {
-                console.error(
-                  'PLAY AFTER LOOP FAILED:',
-                  error
-                )
-              }
-            )
-          }
-        }
-      )
-
-      this.video.addEventListener(
-        'timeupdate',
-        () => {
-          this.updateTimelineDisplay()
-        }
-      )
-
-      this.video.addEventListener(
-        'error',
-        (event) => {
-          console.error(
-            'POC: VIDEO ERROR:',
-            event
-          )
-
-          console.error(
-            'VIDEO ERROR OBJECT:',
-            this.video.error
-          )
-
-          this.statusText =
-            'Video error'
-
-          this.updateTimelineDisplay()
-        }
-      )
+        this.updateTimelineDisplay()
+      })
     },
 
     // ============================================================
     // SYNCHRONIZE TO COMMON TIMELINE
     // ============================================================
-resetPlaybackRate() {
-  if (
-    this.video &&
-    this.video.playbackRate !== 1
-  ) {
-    this.video.playbackRate = 1
-  }
-},
-
-resumeIfDue() {
-  if (
-    this.video &&
-    this.video.paused &&
-    !this.buffering &&
-    !this.userPaused
-  ) {
-    this.video.play().catch(
-      (error) => {
-        console.error(
-          'PLAY FAILED:',
-          error
-        )
+    resetPlaybackRate() {
+      if (this.video && this.video.playbackRate !== 1) {
+        this.video.playbackRate = 1
       }
-    )
-  }
-},
+    },
+
+    resumeIfDue() {
+      if (this.video && this.video.paused && !this.buffering && !this.userPaused) {
+        this.video.play().catch((error) => {
+          console.error('PLAY FAILED:', error)
+        })
+      }
+    },
     syncToCommonTimeline(reason) {
-  if (
-    !this.video ||
-    !this.commonTimelineRunning
-  ) {
-    return
-  }
+      if (!this.video || !this.commonTimelineRunning) {
+        return
+      }
 
-  if (this.syncInProgress) {
-    return
-  }
+      if (this.syncInProgress) {
+        return
+      }
 
-  // Don't fight an active rebuffer.
-  // Let the player recover first.
-  if (
-    this.buffering &&
-    reason !== 'INITIAL_CAN_PLAY'
-  ) {
-    return
-  }
+      // Don't fight an active rebuffer.
+      // Let the player recover first.
+      if (this.buffering && reason !== 'INITIAL_CAN_PLAY') {
+        return
+      }
 
-  const duration =
-    this.video.duration
+      const duration = this.video.duration
 
-  if (
-    !Number.isFinite(duration) ||
-    duration <= 0
-  ) {
-    return
-  }
+      if (!Number.isFinite(duration) || duration <= 0) {
+        return
+      }
 
-  const commonPosition =
-    this.getCommonPosition()
+      const commonPosition = this.getCommonPosition()
 
-  const targetPosition =
-    this.getLoopPosition(
-      duration
-    )
+      const targetPosition = this.getLoopPosition(duration)
 
-  const currentPosition =
-    this.video.currentTime
+      const currentPosition = this.video.currentTime
 
-  const drift =
-    currentPosition - targetPosition
+      const drift = currentPosition - targetPosition
 
-  const absDrift =
-    Math.abs(drift)
+      const absDrift = Math.abs(drift)
 
-  // Below this, no correction is needed.
-  const SYNC_THRESHOLD =
-    0.2
+      // Below this, no correction is needed.
+      const SYNC_THRESHOLD = 0.2
 
-  // Between 0.2 and 2 seconds,
-  // correct using playback speed.
-  const RATE_CORRECT_THRESHOLD =
-    2
+      // Between 0.2 and 2 seconds,
+      // correct using playback speed.
+      const RATE_CORRECT_THRESHOLD = 2
 
-  const RATE_FAST =
-    1.05
+      const RATE_FAST = 1.05
 
-  const RATE_SLOW =
-    0.95
+      const RATE_SLOW = 0.95
 
-  console.log(
-    'POC: COMMON TIMELINE SYNC:',
-    {
-      reason,
-      commonPosition,
-      duration,
-      currentPosition,
-      targetPosition,
-      drift,
-    }
-  )
+      console.log('POC: COMMON TIMELINE SYNC:', {
+        reason,
+        commonPosition,
+        duration,
+        currentPosition,
+        targetPosition,
+        drift,
+      })
 
-  // ------------------------------------------------------------
-  // 1. SMALL DRIFT
-  // ------------------------------------------------------------
+      // ------------------------------------------------------------
+      // 1. SMALL DRIFT
+      // ------------------------------------------------------------
 
-  if (
-    absDrift <= SYNC_THRESHOLD
-  ) {
-    this.resetPlaybackRate()
+      if (absDrift <= SYNC_THRESHOLD) {
+        this.resetPlaybackRate()
 
-    this.resumeIfDue()
+        this.resumeIfDue()
 
-    return
-  }
+        return
+      }
 
-  // ------------------------------------------------------------
-  // 2. DRIFT BETWEEN 0.2 AND 2 SECONDS
-  // ------------------------------------------------------------
+      // ------------------------------------------------------------
+      // 2. DRIFT BETWEEN 0.2 AND 2 SECONDS
+      // ------------------------------------------------------------
 
-  if (
-    absDrift <= RATE_CORRECT_THRESHOLD
-  ) {
-    // Video is ahead -> slow down.
-    // Video is behind -> speed up.
+      if (absDrift <= RATE_CORRECT_THRESHOLD) {
+        // Video is ahead -> slow down.
+        // Video is behind -> speed up.
 
-    this.video.playbackRate =
-      drift > 0
-        ? RATE_SLOW
-        : RATE_FAST
+        this.video.playbackRate = drift > 0 ? RATE_SLOW : RATE_FAST
 
-    this.resumeIfDue()
+        this.resumeIfDue()
 
-    return
-  }
+        return
+      }
 
-  // ------------------------------------------------------------
-  // 3. DRIFT GREATER THAN 2 SECONDS
-  // ------------------------------------------------------------
+      // ------------------------------------------------------------
+      // 3. DRIFT GREATER THAN 2 SECONDS
+      // ------------------------------------------------------------
 
-  this.resetPlaybackRate()
+      this.resetPlaybackRate()
 
-  this.syncInProgress =
-    true
+      this.syncInProgress = true
 
-  try {
-    console.log(
-      'POC: SEEKING TO:',
-      targetPosition
-    )
+      try {
+        console.log('POC: SEEKING TO:', targetPosition)
 
-    this.video.currentTime =
-      targetPosition
-  } catch (error) {
-    console.error(
-      'FAILED TO SET CURRENT TIME:',
-      error
-    )
-  }
+        this.video.currentTime = targetPosition
+      } catch (error) {
+        console.error('FAILED TO SET CURRENT TIME:', error)
+      }
 
-  this.syncInProgress =
-    false
+      this.syncInProgress = false
 
-  this.resumeIfDue()
+      this.resumeIfDue()
 
-  this.updateTimelineDisplay()
-},
+      this.updateTimelineDisplay()
+    },
 
     // ============================================================
     // LOAD HLS VIDEO
@@ -855,159 +671,97 @@ resumeIfDue() {
         return
       }
 
-      console.log(
-        'POC: LOADING HLS VIDEO'
-      )
+      console.log('POC: LOADING HLS VIDEO')
 
-      this.statusText =
-        'Loading HLS video...'
+      this.statusText = 'Loading HLS video...'
 
       if (Hls.isSupported()) {
-        console.log(
-          'POC: HLS.JS IS SUPPORTED'
-        )
+        console.log('POC: HLS.JS IS SUPPORTED')
 
-        const hls =
-          new Hls({
-            enableWorker: true,
-            lowLatencyMode: false,
-            backBufferLength: 90,
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
-          })
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: false,
+          backBufferLength: 90,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
+        })
 
-        this.hls =
-          hls
+        this.hls = hls
 
-        hls.loadSource(
-          VIDEO_URL
-        )
+        hls.loadSource(VIDEO_URL)
 
-        hls.attachMedia(
-          this.video
-        )
+        hls.attachMedia(this.video)
 
-        hls.on(
-          Hls.Events.MANIFEST_PARSED,
-          () => {
-            console.log(
-              'POC: HLS MANIFEST PARSED'
-            )
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          console.log('POC: HLS MANIFEST PARSED')
 
-            this.statusText =
-              'HLS manifest parsed'
+          this.statusText = 'HLS manifest parsed'
 
-            this.updateTimelineDisplay()
+          this.updateTimelineDisplay()
+        })
+
+        hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
+          console.log('POC: HLS LEVEL LOADED', data)
+        })
+
+        hls.on(Hls.Events.ERROR, (event, data) => {
+          console.error('POC: HLS ERROR:', JSON.stringify(data))
+
+          if (!data || !data.fatal) {
+            return
           }
-        )
 
-        hls.on(
-          Hls.Events.LEVEL_LOADED,
-          (event, data) => {
-            console.log(
-              'POC: HLS LEVEL LOADED',
-              data
-            )
-          }
-        )
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            console.log('POC: HLS NETWORK ERROR - RECOVERING')
 
-        hls.on(
-          Hls.Events.ERROR,
-          (event, data) => {
-            console.error(
-  'POC: HLS ERROR:',
-  JSON.stringify(data)
-)
+            this.statusText = 'Network error - recovering'
 
-            if (
-              !data ||
-              !data.fatal
-            ) {
-              return
+            try {
+              hls.startLoad()
+            } catch (error) {
+              console.error('HLS NETWORK RECOVERY FAILED:', error)
             }
 
-            if (
-              data.type ===
-              Hls.ErrorTypes.NETWORK_ERROR
-            ) {
-              console.log(
-                'POC: HLS NETWORK ERROR - RECOVERING'
-              )
-
-              this.statusText =
-                'Network error - recovering'
-
-              try {
-                hls.startLoad()
-              } catch (error) {
-                console.error(
-                  'HLS NETWORK RECOVERY FAILED:',
-                  error
-                )
-              }
-
-              return
-            }
-
-            if (
-              data.type ===
-              Hls.ErrorTypes.MEDIA_ERROR
-            ) {
-              console.log(
-                'POC: HLS MEDIA ERROR - RECOVERING'
-              )
-
-              this.statusText =
-                'Media error - recovering'
-
-              try {
-                hls.recoverMediaError()
-              } catch (error) {
-                console.error(
-                  'HLS MEDIA RECOVERY FAILED:',
-                  error
-                )
-              }
-
-              return
-            }
-
-            this.statusText =
-              'Fatal HLS error'
+            return
           }
-        )
+
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            console.log('POC: HLS MEDIA ERROR - RECOVERING')
+
+            this.statusText = 'Media error - recovering'
+
+            try {
+              hls.recoverMediaError()
+            } catch (error) {
+              console.error('HLS MEDIA RECOVERY FAILED:', error)
+            }
+
+            return
+          }
+
+          this.statusText = 'Fatal HLS error'
+        })
 
         this.startTimelineLogging()
 
         return
       }
 
-      if (
-        this.video.canPlayType(
-          'application/vnd.apple.mpegurl'
-        )
-      ) {
-        console.log(
-          'POC: NATIVE HLS IS SUPPORTED'
-        )
+      if (this.video.canPlayType('application/vnd.apple.mpegurl')) {
+        console.log('POC: NATIVE HLS IS SUPPORTED')
 
-        this.video.src =
-          VIDEO_URL
+        this.video.src = VIDEO_URL
 
-        this.statusText =
-          'Native HLS loaded'
+        this.statusText = 'Native HLS loaded'
 
         this.startTimelineLogging()
 
         return
       }
 
-      console.error(
-        'POC: HLS NOT SUPPORTED'
-      )
+      console.error('POC: HLS NOT SUPPORTED')
 
-      this.statusText =
-        'HLS not supported'
+      this.statusText = 'HLS not supported'
     },
 
     // ============================================================
@@ -1017,38 +771,24 @@ resumeIfDue() {
     startTimelineLogging() {
       this.stopTimelineLogging()
 
-      this.timelineInterval =
-        setInterval(
-          () => {
-            if (!this.video) {
-              return
-            }
+      this.timelineInterval = setInterval(() => {
+        if (!this.video) {
+          return
+        }
 
-            if (
-              this.initialSyncDone &&
-              !this.buffering
-            ) {
-              this.syncToCommonTimeline(
-                'PERIODIC_SYNC'
-              )
-            }
+        if (this.initialSyncDone && !this.buffering) {
+          this.syncToCommonTimeline('PERIODIC_SYNC')
+        }
 
-            this.updateTimelineDisplay()
-          },
-          1000
-        )
+        this.updateTimelineDisplay()
+      }, 1000)
     },
 
     stopTimelineLogging() {
-      if (
-        this.timelineInterval
-      ) {
-        clearInterval(
-          this.timelineInterval
-        )
+      if (this.timelineInterval) {
+        clearInterval(this.timelineInterval)
 
-        this.timelineInterval =
-          null
+        this.timelineInterval = null
       }
     },
 
@@ -1057,53 +797,31 @@ resumeIfDue() {
     // ============================================================
 
     updateTimelineDisplay() {
-  if (
-    !this.video ||
-    !this.timelineOverlay
-  ) {
-    return
-  }
+      if (!this.video || !this.timelineOverlay) {
+        return
+      }
 
-  const currentTime =
-    this.video.currentTime
+      const currentTime = this.video.currentTime
 
-  const duration =
-    Number.isFinite(this.video.duration)
-      ? this.video.duration
-      : 0
+      const duration = Number.isFinite(this.video.duration) ? this.video.duration : 0
 
-  const commonPosition =
-    this.getCommonPosition()
+      const commonPosition = this.getCommonPosition()
 
-  const targetPosition =
-    this.getLoopPosition(duration)
+      const targetPosition = this.getLoopPosition(duration)
 
-  const drift =
-    currentTime - targetPosition
+      const drift = currentTime - targetPosition
 
-  const progress =
-    duration > 0
-      ? Math.min(
-          100,
-          Math.max(
-            0,
-            (currentTime / duration) * 100
-          )
-        )
-      : 0
+      const progress = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0
 
-  let status =
-    'PLAYING'
+      let status = 'PLAYING'
 
-  if (this.buffering) {
-    status =
-      'BUFFERING'
-  } else if (this.video.paused) {
-    status =
-      'WAITING'
-  }
+      if (this.buffering) {
+        status = 'BUFFERING'
+      } else if (this.video.paused) {
+        status = 'WAITING'
+      }
 
-  this.timelineOverlay.innerHTML = `
+      this.timelineOverlay.innerHTML = `
     <div style="font-size:30px;font-weight:bold;margin-bottom:8px;">
       VIDEO
     </div>
@@ -1151,60 +869,44 @@ resumeIfDue() {
       STATUS: ${status}
     </div>
   `
-},
+    },
     // ============================================================
     // CLEANUP
     // ============================================================
 
     removeVideo() {
-      console.log(
-        'POC: REMOVING VIDEO'
-      )
+      console.log('POC: REMOVING VIDEO')
 
       try {
         if (this.hls) {
           this.hls.destroy()
         }
       } catch (error) {
-        console.error(
-          'HLS DESTROY ERROR:',
-          error
-        )
+        console.error('HLS DESTROY ERROR:', error)
       }
 
-      this.hls =
-        null
+      this.hls = null
 
       try {
         if (this.video) {
           this.video.pause()
 
-          this.video.removeAttribute(
-            'src'
-          )
+          this.video.removeAttribute('src')
 
           this.video.load()
 
-          if (
-            this.video.parentNode
-          ) {
-            this.video.parentNode.removeChild(
-              this.video
-            )
+          if (this.video.parentNode) {
+            this.video.parentNode.removeChild(this.video)
           }
         }
       } catch (error) {
-        console.error(
-          'VIDEO REMOVE ERROR:',
-          error
-        )
+        console.error('VIDEO REMOVE ERROR:', error)
       }
       if (this.timelineOverlay) {
-  this.timelineOverlay.remove()
-  this.timelineOverlay = null
-}
-      this.video =
-        null
+        this.timelineOverlay.remove()
+        this.timelineOverlay = null
+      }
+      this.video = null
     },
   },
 })
