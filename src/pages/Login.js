@@ -711,33 +711,83 @@ export default Blits.Component('Login', {
     console.log('Login successful')
 
     try {
+  const controller = new AbortController()
 
-      const response = await fetch(
-        'http://192.168.29.250:3001/session'
+  const timeout = setTimeout(() => {
+    controller.abort()
+  }, 5000)
+
+  try {
+    const response = await fetch(
+      'http://192.168.29.250:3001/session',
+      {
+        signal: controller.signal,
+      }
+    )
+
+    if (!response.ok) {
+      throw new Error(
+        `Sync server returned HTTP ${response.status}`
       )
+    }
 
-      const session = await response.json()
+    const session = await response.json()
+
+    localStorage.setItem(
+      'commonTimelineStart',
+      String(session.commonTimelineStart)
+    )
+
+    console.log(
+      'COMMON TIMELINE FROM SYNC SERVER:',
+      session.commonTimelineStart
+    )
+
+    clearTimeout(timeout)
+
+    this.$router.to('/poc')
+
+  } catch (error) {
+
+    clearTimeout(timeout)
+
+    console.error(
+      'FAILED TO CONNECT TO SYNC SERVER:',
+      error
+    )
+
+    const savedTimeline =
+      localStorage.getItem('commonTimelineStart')
+
+    if (savedTimeline) {
 
       console.log(
-        'COMMON TIMELINE FROM SYNC SERVER:',
-        session.commonTimelineStart
+        'USING SAVED COMMON TIMELINE:',
+        savedTimeline
       )
 
       this.$router.to('/poc')
 
-    } catch (error) {
-
-      console.error(
-        'FAILED TO CONNECT TO SYNC SERVER:',
-        error
-      )
+    } else {
 
       this.errorMessage =
         'Unable to connect to sync server'
 
     }
+  }
 
-  } else {
+} catch (error) {
+
+  console.error(
+    'LOGIN NETWORK ERROR:',
+    error
+  )
+
+  this.errorMessage =
+    'Unable to connect to sync server'
+}
+  }
+else {
 
     this.errorMessage = 'Invalid email or password'
 
