@@ -3,8 +3,7 @@ import Hls from 'hls.js'
 
 import { getSyncServerUrl } from '../utils/syncServer.js'
 
-const VIDEO_URL =
-  'https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8'
+
 
 export default Blits.Component('VideoSyncTimelinePoc', {
   template: `
@@ -97,6 +96,13 @@ export default Blits.Component('VideoSyncTimelinePoc', {
       commonTimelineRunning: false,
 
       serverClockOffset: 0,
+      playlist: [],
+currentVideoIndex: 0,
+playlistDurations: [],
+playlistTotalDuration: 0,
+playlistLoaded: false,
+playlistPollInterval: null,
+streamStopped: false,
 
       initialSyncDone: false,
 
@@ -117,6 +123,8 @@ export default Blits.Component('VideoSyncTimelinePoc', {
       console.log('================================================')
 
       await this.startCommonTimeline()
+
+      await this.loadPlaylistDurations()
 
       this.createVideo()
 
@@ -162,7 +170,7 @@ export default Blits.Component('VideoSyncTimelinePoc', {
 
         this.userPaused = false
 
-        this.syncToCommonTimeline('MANUAL_PLAY')
+        this.syncToPlaylistTimeline('MANUAL_PLAY')
 
         return
       }
@@ -216,9 +224,13 @@ export default Blits.Component('VideoSyncTimelinePoc', {
     }
 
     return {
-      commonTimelineStart,
-      serverNow,
-    }
+  commonTimelineStart,
+  serverNow,
+  playlist: Array.isArray(session.playlist)
+    ? session.playlist
+    : [],
+  streaming: session.streaming !== false,
+}
 
   } finally {
     clearTimeout(timeout)
@@ -231,7 +243,7 @@ export default Blits.Component('VideoSyncTimelinePoc', {
       return new Promise((resolve) => setTimeout(resolve, ms))
     },
 
-    async startCommonTimeline() {
+   async startCommonTimeline() {
   if (this.commonTimelineRunning) {
     return
   }
@@ -242,23 +254,35 @@ export default Blits.Component('VideoSyncTimelinePoc', {
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const { commonTimelineStart, serverNow } =
-        await this.fetchSyncSession()
+      const {
+        commonTimelineStart,
+        serverNow,
+        playlist,
+        streaming,
+      } = await this.fetchSyncSession()
 
       const localNow = Date.now()
       const serverOffset = serverNow - localNow
 
       this.commonTimelineStart = commonTimelineStart
       this.serverClockOffset = serverOffset
-      localStorage.setItem(
-  'serverClockOffset',
-  String(serverOffset)
-)
+      this.playlist = playlist
+      this.streamStopped = !streaming
 
-      // Save the latest valid timeline locally
+      // Save sync data locally for offline recovery
+      localStorage.setItem(
+        'playlist',
+        JSON.stringify(this.playlist)
+      )
+
+      localStorage.setItem(
+        'serverClockOffset',
+        String(this.serverClockOffset)
+      )
+
       localStorage.setItem(
         'commonTimelineStart',
-        String(commonTimelineStart)
+        String(this.commonTimelineStart)
       )
 
       this.commonTimelineRunning = true
@@ -286,32 +310,59 @@ export default Blits.Component('VideoSyncTimelinePoc', {
 
       // Try saved timeline after all server retries fail
       if (attempt === MAX_RETRIES) {
-        const savedTimeline =
-          localStorage.getItem('commonTimelineStart')
+  const savedTimeline =
+    localStorage.getItem('commonTimelineStart')
 
-        if (savedTimeline) {
-          const savedTimelineStart = Number(savedTimeline)
+  const savedPlaylist =
+    localStorage.getItem('playlist')
 
-          if (Number.isFinite(savedTimelineStart)) {
-            this.commonTimelineStart = savedTimelineStart
-            const savedServerOffset =
-  localStorage.getItem('serverClockOffset')
+  if (savedTimeline && savedPlaylist) {
+    const savedTimelineStart = Number(savedTimeline)
 
-this.serverClockOffset = savedServerOffset
-  ? Number(savedServerOffset)
-  : 0
-            this.commonTimelineRunning = true
+    let parsedPlaylist = []
 
-            console.log(
-              'POC: USING SAVED COMMON TIMELINE:',
-              savedTimelineStart
-            )
+    try {
+      parsedPlaylist = JSON.parse(savedPlaylist)
+    } catch (error) {
+      console.error(
+        'FAILED TO PARSE SAVED PLAYLIST:',
+        error
+      )
+    }
 
-            return
-          }
+    if (
+      Number.isFinite(savedTimelineStart) &&
+      Array.isArray(parsedPlaylist) &&
+      parsedPlaylist.length > 0
+    ) {
+      this.commonTimelineStart = savedTimelineStart
+
+      const savedServerOffset =
+        localStorage.getItem('serverClockOffset')
+
+      this.serverClockOffset = savedServerOffset
+        ? Number(savedServerOffset)
+        : 0
+
+      this.playlist = parsedPlaylist
+
+      this.streamStopped = false
+
+      this.commonTimelineRunning = true
+
+      console.log(
+        'POC: USING SAVED SYNC DATA:',
+        {
+          commonTimelineStart: savedTimelineStart,
+          playlistLength: this.playlist.length,
+          playlist: this.playlist,
         }
-      }
+      )
 
+      return
+    }
+  }
+}
       this.statusText =
         attempt < MAX_RETRIES
           ? `Unable to connect to sync server, retrying (${attempt}/${MAX_RETRIES})...`
@@ -382,7 +433,401 @@ this.serverClockOffset = savedServerOffset
 
       return commonPosition % duration
     },
+    async loadPlaylistDurations() {
+  if (!this.playlist || this.playlist.length === 0) {
+    return
+  }
 
+  console.log('POC: LOADING PLAYLIST DURATIONS')
+
+  const durations = []
+
+  for (const item of this.playlist) {
+    try {
+      const duration = await this.getVideoDuration(item.url)
+
+      console.log(
+        `POC: VIDEO DURATION - ${item.title}:`,
+        duration
+      )
+
+      durations.push(duration)
+    } catch (error) {
+      console.error(
+        `POC: FAILED TO GET DURATION - ${item.title}:`,
+        error
+      )
+
+      durations.push(0)
+    }
+  }
+
+  this.playlistDurations = durations
+
+  this.playlistTotalDuration =
+    durations.reduce(
+      (total, duration) => total + duration,
+      0
+    )
+
+  this.playlistLoaded = true
+
+  console.log('POC: PLAYLIST DURATIONS:', durations)
+
+  console.log(
+    'POC: PLAYLIST TOTAL DURATION:',
+    this.playlistTotalDuration
+  )
+},
+switchToPlaylistVideo(videoIndex, position) {
+  if (
+    !this.playlist ||
+    !this.playlist[videoIndex] ||
+    !this.video
+  ) {
+    return
+  }
+
+  const videoItem = this.playlist[videoIndex]
+
+  console.log(
+    'POC: SWITCHING PLAYLIST VIDEO:',
+    videoItem.title,
+    'POSITION:',
+    position
+  )
+
+  this.currentVideoIndex = videoIndex
+
+  // Destroy the current HLS instance.
+  if (this.hls) {
+    this.hls.destroy()
+    this.hls = null
+  }
+
+  this.video.pause()
+
+  const videoUrl = videoItem.url
+
+  if (Hls.isSupported()) {
+    const hls = new Hls({
+      enableWorker: true,
+      lowLatencyMode: false,
+      backBufferLength: 90,
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+    })
+
+    this.hls = hls
+
+    hls.loadSource(videoUrl)
+    hls.attachMedia(this.video)
+
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      console.log(
+        'POC: PLAYLIST VIDEO READY:',
+        videoItem.title
+      )
+
+      if (this.video) {
+        this.video.currentTime = position
+
+        this.video.play().catch((error) => {
+          console.error(
+            'POC: PLAY FAILED AFTER PLAYLIST SWITCH:',
+            error
+          )
+        })
+      }
+    })
+
+    hls.on(Hls.Events.ERROR, (event, data) => {
+      console.error(
+        'POC: PLAYLIST HLS ERROR:',
+        JSON.stringify(data)
+      )
+
+      if (!data || !data.fatal) {
+        return
+      }
+
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        hls.startLoad()
+        return
+      }
+
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        hls.recoverMediaError()
+      }
+    })
+
+    return
+  }
+
+  if (
+    this.video.canPlayType(
+      'application/vnd.apple.mpegurl'
+    )
+  ) {
+    this.video.src = videoUrl
+    this.video.currentTime = position
+
+    this.video.play().catch((error) => {
+      console.error(
+        'POC: NATIVE PLAY FAILED:',
+        error
+      )
+    })
+  }
+},
+syncToPlaylistTimeline(reason) {
+  if (
+    !this.video ||
+    !this.playlistLoaded ||
+    this.streamStopped ||
+    !this.commonTimelineRunning
+  ) {
+    return
+  }
+
+  if (this.syncInProgress) {
+    return
+  }
+const {
+  videoIndex,
+  position: targetPosition,
+} = this.getPlaylistPosition()
+
+// If the common timeline says another video should be playing,
+// switch to that video first.
+if (videoIndex !== this.currentVideoIndex) {
+  console.log('POC: PLAYLIST VIDEO CHANGE:', {
+    from: this.currentVideoIndex,
+    to: videoIndex,
+    reason,
+  })
+
+  this.initialSyncDone = false
+
+  this.switchToPlaylistVideo(
+    videoIndex,
+    targetPosition
+  )
+
+  return
+}
+
+if (this.video.readyState < 1) {
+  return
+}
+
+const currentPosition = this.video.currentTime
+
+  const drift =
+    currentPosition - targetPosition
+
+  const absDrift = Math.abs(drift)
+
+  const SYNC_THRESHOLD = 0.2
+  const RATE_CORRECT_THRESHOLD = 2
+
+  const RATE_FAST = 1.05
+  const RATE_SLOW = 0.95
+
+  console.log('POC: PLAYLIST SYNC:', {
+    reason,
+    videoIndex,
+    currentPosition,
+    targetPosition,
+    drift,
+  })
+
+  // 1. Drift <= 0.2 sec
+  if (absDrift <= SYNC_THRESHOLD) {
+    this.resetPlaybackRate()
+    this.resumeIfDue()
+    return
+  }
+
+  // 2. Drift between 0.2 and 2 sec
+  if (absDrift <= RATE_CORRECT_THRESHOLD) {
+    // Behind -> speed up
+    // Ahead -> slow down
+    this.video.playbackRate =
+      drift > 0 ? RATE_SLOW : RATE_FAST
+
+    this.resumeIfDue()
+    return
+  }
+
+  // 3. Drift greater than 2 sec
+  this.resetPlaybackRate()
+
+  this.syncInProgress = true
+
+  try {
+    console.log(
+      'POC: PLAYLIST SEEKING TO:',
+      targetPosition
+    )
+
+    this.video.currentTime = targetPosition
+  } catch (error) {
+    console.error(
+      'FAILED TO SET PLAYLIST CURRENT TIME:',
+      error
+    )
+  }
+
+  this.syncInProgress = false
+
+  this.resumeIfDue()
+  this.updateTimelineDisplay()
+},
+getVideoDuration(url) {
+  return new Promise((resolve, reject) => {
+    if (!Hls.isSupported()) {
+      reject(
+        new Error(
+          'HLS.js is not supported'
+        )
+      )
+      return
+    }
+
+    const tempVideo =
+      document.createElement('video')
+
+    tempVideo.muted = true
+    tempVideo.playsInline = true
+    tempVideo.preload = 'metadata'
+
+    const tempHls = new Hls({
+      enableWorker: true,
+      lowLatencyMode: false,
+    })
+
+    let resolved = false
+
+    const cleanup = () => {
+      tempHls.destroy()
+
+      tempVideo.removeAttribute('src')
+      tempVideo.load()
+    }
+
+    tempHls.on(
+      Hls.Events.LEVEL_LOADED,
+      (event, data) => {
+        if (resolved) {
+          return
+        }
+
+        const duration =
+          data.details.totalduration
+
+        if (
+          Number.isFinite(duration) &&
+          duration > 0
+        ) {
+          resolved = true
+
+          console.log(
+            'POC: HLS DURATION FOUND:',
+            url,
+            duration
+          )
+
+          cleanup()
+
+          resolve(duration)
+        }
+      }
+    )
+
+    tempHls.on(
+      Hls.Events.ERROR,
+      (event, data) => {
+        if (
+          resolved ||
+          !data ||
+          !data.fatal
+        ) {
+          return
+        }
+
+        resolved = true
+
+        cleanup()
+
+        reject(
+          new Error(
+            `Failed to load HLS duration: ${url}`
+          )
+        )
+      }
+    )
+
+    tempHls.loadSource(url)
+    tempHls.attachMedia(tempVideo)
+  })
+},
+getPlaylistPosition() {
+  const commonPosition = this.getCommonPosition()
+
+  if (
+    !this.playlist ||
+    this.playlist.length === 0 ||
+    !this.playlistDurations ||
+    this.playlistDurations.length !== this.playlist.length
+  ) {
+    return {
+      videoIndex: 0,
+      position: 0,
+    }
+  }
+
+  const totalDuration = this.playlistTotalDuration
+
+  if (!Number.isFinite(totalDuration) || totalDuration <= 0) {
+    return {
+      videoIndex: 0,
+      position: 0,
+    }
+  }
+
+  // Keep the playlist looping continuously.
+  const playlistPosition =
+    commonPosition % totalDuration
+
+  let elapsed = 0
+
+  for (
+    let i = 0;
+    i < this.playlistDurations.length;
+    i++
+  ) {
+    const duration = this.playlistDurations[i]
+
+    if (playlistPosition < elapsed + duration) {
+      return {
+        videoIndex: i,
+        position: playlistPosition - elapsed,
+      }
+    }
+
+    elapsed += duration
+  }
+
+  // Safety fallback to the last video.
+  const lastIndex =
+    this.playlistDurations.length - 1
+
+  return {
+    videoIndex: lastIndex,
+    position: this.playlistDurations[lastIndex],
+  }
+},
     // ============================================================
     // TIME FORMAT
     // ============================================================
@@ -517,7 +962,7 @@ this.serverClockOffset = savedServerOffset
         if (!this.initialSyncDone) {
           console.log('POC: INITIAL SYNC START')
 
-          this.syncToCommonTimeline('INITIAL_CAN_PLAY')
+          this.syncToPlaylistTimeline('INITIAL_CAN_PLAY')
 
           // Give the browser/HLS a moment to apply
           // the initial seek before marking sync complete.
@@ -529,9 +974,9 @@ this.serverClockOffset = savedServerOffset
             console.log('POC: INITIAL SYNC RESULT:', {
               currentPosition: this.video.currentTime,
 
-              targetPosition: this.getLoopPosition(this.video.duration),
+             targetPosition: this.getPlaylistPosition().position,
 
-              drift: this.video.currentTime - this.getLoopPosition(this.video.duration),
+             drift: this.video.currentTime - this.getPlaylistPosition().position,
             })
 
             this.initialSyncDone = true
@@ -549,7 +994,7 @@ this.serverClockOffset = savedServerOffset
         if (this.buffering) {
           console.log('POC: VIDEO RECOVERED FROM BUFFERING')
 
-          this.syncToCommonTimeline('BUFFER_RECOVERY')
+          this.syncToPlaylistTimeline('BUFFER_RECOVERY')
         }
 
         this.updateTimelineDisplay()
@@ -593,7 +1038,7 @@ this.serverClockOffset = savedServerOffset
 
         // Never simply go to zero.
         // Calculate the current loop position.
-        this.syncToCommonTimeline('VIDEO_ENDED')
+        this.syncToPlaylistTimeline('VIDEO_ENDED')
 
         if (this.video && this.video.paused) {
           this.video.play().catch((error) => {
@@ -633,107 +1078,7 @@ this.serverClockOffset = savedServerOffset
         })
       }
     },
-    syncToCommonTimeline(reason) {
-      if (!this.video || !this.commonTimelineRunning) {
-        return
-      }
-
-      if (this.syncInProgress) {
-        return
-      }
-
-      // Don't fight an active rebuffer.
-      // Let the player recover first.
-      if (this.buffering && reason !== 'INITIAL_CAN_PLAY') {
-        return
-      }
-
-      const duration = this.video.duration
-
-      if (!Number.isFinite(duration) || duration <= 0) {
-        return
-      }
-
-      const commonPosition = this.getCommonPosition()
-
-      const targetPosition = this.getLoopPosition(duration)
-
-      const currentPosition = this.video.currentTime
-
-      const drift = currentPosition - targetPosition
-
-      const absDrift = Math.abs(drift)
-
-      // Below this, no correction is needed.
-      const SYNC_THRESHOLD = 0.2
-
-      // Between 0.2 and 2 seconds,
-      // correct using playback speed.
-      const RATE_CORRECT_THRESHOLD = 2
-
-      const RATE_FAST = 1.05
-
-      const RATE_SLOW = 0.95
-
-      console.log('POC: COMMON TIMELINE SYNC:', {
-        reason,
-        commonPosition,
-        duration,
-        currentPosition,
-        targetPosition,
-        drift,
-      })
-
-      // ------------------------------------------------------------
-      // 1. SMALL DRIFT
-      // ------------------------------------------------------------
-
-      if (absDrift <= SYNC_THRESHOLD) {
-        this.resetPlaybackRate()
-
-        this.resumeIfDue()
-
-        return
-      }
-
-      // ------------------------------------------------------------
-      // 2. DRIFT BETWEEN 0.2 AND 2 SECONDS
-      // ------------------------------------------------------------
-
-      if (absDrift <= RATE_CORRECT_THRESHOLD) {
-        // Video is ahead -> slow down.
-        // Video is behind -> speed up.
-
-        this.video.playbackRate = drift > 0 ? RATE_SLOW : RATE_FAST
-
-        this.resumeIfDue()
-
-        return
-      }
-
-      // ------------------------------------------------------------
-      // 3. DRIFT GREATER THAN 2 SECONDS
-      // ------------------------------------------------------------
-
-      this.resetPlaybackRate()
-
-      this.syncInProgress = true
-
-      try {
-        console.log('POC: SEEKING TO:', targetPosition)
-
-        this.video.currentTime = targetPosition
-      } catch (error) {
-        console.error('FAILED TO SET CURRENT TIME:', error)
-      }
-
-      this.syncInProgress = false
-
-      this.resumeIfDue()
-
-      this.updateTimelineDisplay()
-    },
-
+    
     // ============================================================
     // LOAD HLS VIDEO
     // ============================================================
@@ -742,6 +1087,17 @@ this.serverClockOffset = savedServerOffset
       if (!this.video) {
         return
       }
+      if (!this.playlist || this.playlist.length === 0) {
+  console.error('POC: PLAYLIST IS EMPTY')
+  this.statusText = 'Playlist is empty'
+  return
+}
+
+const firstVideo = this.playlist[0]
+
+console.log('POC: LOADING PLAYLIST VIDEO:', firstVideo)
+
+const videoUrl = firstVideo.url
 
       console.log('POC: LOADING HLS VIDEO')
 
@@ -760,7 +1116,7 @@ this.serverClockOffset = savedServerOffset
 
         this.hls = hls
 
-        hls.loadSource(VIDEO_URL)
+        hls.loadSource(videoUrl)
 
         hls.attachMedia(this.video)
 
@@ -822,7 +1178,7 @@ this.serverClockOffset = savedServerOffset
       if (this.video.canPlayType('application/vnd.apple.mpegurl')) {
         console.log('POC: NATIVE HLS IS SUPPORTED')
 
-        this.video.src = VIDEO_URL
+        this.video.src = videoUrl
 
         this.statusText = 'Native HLS loaded'
 
@@ -848,11 +1204,15 @@ this.serverClockOffset = savedServerOffset
           return
         }
 
-        if (this.initialSyncDone && !this.buffering) {
-          this.syncToCommonTimeline('PERIODIC_SYNC')
-        }
+        if (
+  this.playlistLoaded &&
+  !this.buffering &&
+  !this.streamStopped
+) {
+  this.syncToPlaylistTimeline('PERIODIC_SYNC')
+}
 
-        this.updateTimelineDisplay()
+this.updateTimelineDisplay()
       }, 1000)
     },
 
@@ -879,7 +1239,7 @@ this.serverClockOffset = savedServerOffset
 
       const commonPosition = this.getCommonPosition()
 
-      const targetPosition = this.getLoopPosition(duration)
+      const { position: targetPosition } = this.getPlaylistPosition()
 
       const drift = currentTime - targetPosition
 
