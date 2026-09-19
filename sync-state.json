@@ -1,4 +1,33 @@
 {
-  "commonTimelineStart": 1789718123408,
-  "streaming": true
+  "commonTimelineStart": 1789751285682,
+  "streaming": true,
+  "playlist": [
+    {
+      "id": 1,
+      "title": "Apple BipBop",
+      "url": "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8"
+    },
+    {
+      "id": 2,
+      "title": "Big Buck Bunny",
+      "url": "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+    },
+    {
+      "id": 3,
+      "title": "Tears of Steel",
+      "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8"
+    }
+  ],
+  "playlistVersion": 1,
+  "playlistCycleStartCommonPosition": 0,
+  "playlistCycleStartIndex": 0,
+  "pendingVideos": [],
+  "lastPlaybackState": {
+    "videoId": 3,
+    "position": 320.489,
+    "duration": 734,
+    "commonPosition": 1555.087,
+    "playlistTotalDuration": 1968.5839999999998,
+    "reportedAt": 1789752840859
+  }
 }

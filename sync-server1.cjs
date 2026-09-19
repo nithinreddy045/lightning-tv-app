@@ -5,7 +5,7 @@ const path = require('path')
 const PORT = 3001
 const STATE_FILE = path.join(__dirname, 'sync-state.json')
 
-const playlist = [
+let playlist = [
   {
     id: 1,
     title: 'Apple BipBop',
@@ -25,8 +25,18 @@ const playlist = [
 
 let commonTimelineStart = null
 let streaming = true
+let playlistVersion = 1
 
-// Load persistent timeline state
+// Active playlist timeline information
+let playlistCycleStartCommonPosition = 0
+let playlistCycleStartIndex = 0
+
+// Videos waiting to be added at the end of the current cycle
+let pendingVideos = []
+
+// Latest playback information reported by a TV
+let lastPlaybackState = null
+
 if (fs.existsSync(STATE_FILE)) {
   try {
     const state = JSON.parse(
@@ -36,8 +46,31 @@ if (fs.existsSync(STATE_FILE)) {
     commonTimelineStart =
       Number(state.commonTimelineStart) || null
 
+      playlistVersion =
+  Number(state.playlistVersion) || 1
+
     streaming =
       state.streaming !== false
+
+    playlist =
+      Array.isArray(state.playlist) &&
+      state.playlist.length > 0
+        ? state.playlist
+        : playlist
+
+    playlistCycleStartCommonPosition =
+      Number(state.playlistCycleStartCommonPosition) || 0
+
+    playlistCycleStartIndex =
+      Number(state.playlistCycleStartIndex) || 0
+
+    pendingVideos =
+      Array.isArray(state.pendingVideos)
+        ? state.pendingVideos
+        : []
+
+    lastPlaybackState =
+      state.lastPlaybackState || null
 
     if (commonTimelineStart) {
       console.log(
@@ -53,7 +86,6 @@ if (fs.existsSync(STATE_FILE)) {
   }
 }
 
-// Save persistent state
 function saveState() {
   fs.writeFileSync(
     STATE_FILE,
@@ -61,10 +93,86 @@ function saveState() {
       {
         commonTimelineStart,
         streaming,
+        playlist,
+        playlistVersion,
+        playlistCycleStartCommonPosition,
+        playlistCycleStartIndex,
+        pendingVideos,
+        lastPlaybackState,
       },
       null,
       2
     )
+  )
+}
+
+function getCommonPosition() {
+  if (!commonTimelineStart) {
+    return 0
+  }
+
+  return Math.max(
+    0,
+    (Date.now() - commonTimelineStart) / 1000
+  )
+}
+
+function activatePendingVideosIfDue() {
+  if (
+    pendingVideos.length === 0 ||
+    !lastPlaybackState
+  ) {
+    return
+  }
+
+  const commonPosition = getCommonPosition()
+
+  const dueVideos = pendingVideos.filter(
+    (item) =>
+      commonPosition >= item.activationCommonPosition
+  )
+
+  if (dueVideos.length === 0) {
+    return
+  }
+
+  console.log(
+    'ACTIVATING PENDING VIDEOS:',
+    dueVideos
+  )
+
+  const firstNewVideo = dueVideos[0].video
+
+  // Add all pending videos to the active playlist.
+  for (const item of dueVideos) {
+    playlist.push(item.video)
+  }
+  
+  playlistVersion += 1
+
+  // The new cycle starts with the first newly added video.
+  playlistCycleStartCommonPosition =
+    dueVideos[0].activationCommonPosition
+
+  playlistCycleStartIndex =
+    playlist.findIndex(
+      (item) => item.id === firstNewVideo.id
+    )
+
+  pendingVideos = pendingVideos.filter(
+    (item) =>
+      commonPosition < item.activationCommonPosition
+  )
+
+  saveState()
+
+  console.log(
+    'PLAYLIST UPDATED:',
+    {
+      playlist,
+      playlistCycleStartCommonPosition,
+      playlistCycleStartIndex,
+    }
   )
 }
 
@@ -75,11 +183,30 @@ const server = http.createServer((req, res) => {
   )
 
   res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type'
+  )
+
+  res.setHeader(
+    'Access-Control-Allow-Methods',
+    'GET,POST,OPTIONS'
+  )
+
+  res.setHeader(
     'Content-Type',
     'application/json'
   )
 
-  // Get complete sync session
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 204
+    res.end()
+    return
+  }
+
+  // ------------------------------------------------------------
+  // SESSION
+  // ------------------------------------------------------------
+
   if (
     req.url === '/session' &&
     req.method === 'GET'
@@ -95,6 +222,8 @@ const server = http.createServer((req, res) => {
       )
     }
 
+    activatePendingVideosIfDue()
+
     const serverNow = Date.now()
 
     console.log(
@@ -104,6 +233,7 @@ const server = http.createServer((req, res) => {
         serverNow,
         streaming,
         playlistLength: playlist.length,
+        pendingVideos: pendingVideos.length,
       }
     )
 
@@ -112,57 +242,89 @@ const server = http.createServer((req, res) => {
         commonTimelineStart,
         serverNow,
         streaming,
+
         playlist,
+        playlistVersion,
+        pendingVideos,
+
+        playlistCycleStartCommonPosition,
+
+        playlistCycleStartIndex,
       })
     )
 
     return
   }
 
-  // Add a video to playlist
+  // ------------------------------------------------------------
+  // PLAYBACK STATE
+  // ------------------------------------------------------------
+
   if (
-    req.url === '/playlist' &&
+    req.url === '/playback-state' &&
     req.method === 'POST'
   ) {
     let body = ''
 
-    req.on('data', chunk => {
+    req.on('data', (chunk) => {
       body += chunk
     })
 
     req.on('end', () => {
       try {
-        const video = JSON.parse(body)
+        const state = JSON.parse(body)
 
-        if (!video.url) {
+        const videoId = Number(state.videoId)
+
+        const position =
+          Number(state.position)
+
+        const duration =
+          Number(state.duration)
+
+        const commonPosition =
+          Number(state.commonPosition)
+
+        const playlistTotalDuration =
+          Number(state.playlistTotalDuration)
+
+        if (
+          !Number.isFinite(videoId) ||
+          !Number.isFinite(position) ||
+          !Number.isFinite(duration) ||
+          !Number.isFinite(commonPosition) ||
+          !Number.isFinite(playlistTotalDuration) ||
+          duration <= 0 ||
+          playlistTotalDuration <= 0
+        ) {
           res.statusCode = 400
 
           res.end(
             JSON.stringify({
-              error: 'Video URL is required',
+              error:
+                'Invalid playback state',
             })
           )
 
           return
         }
 
-        playlist.push({
-          id: playlist.length + 1,
-          title:
-            video.title ||
-            `Video ${playlist.length + 1}`,
-          url: video.url,
-        })
+        lastPlaybackState = {
+          videoId,
+          position,
+          duration,
+          commonPosition,
+          playlistTotalDuration,
+          reportedAt: Date.now(),
+        }
 
-        console.log(
-          'VIDEO ADDED TO PLAYLIST:',
-          playlist[playlist.length - 1]
-        )
+        activatePendingVideosIfDue()
+
+        saveState()
 
         res.end(
           JSON.stringify({
             success: true,
-            playlist,
           })
         )
       } catch (error) {
@@ -179,7 +341,157 @@ const server = http.createServer((req, res) => {
     return
   }
 
-  // Stop streaming
+  // ------------------------------------------------------------
+  // ADD VIDEO
+  // ------------------------------------------------------------
+
+  if (
+    req.url === '/playlist' &&
+    req.method === 'POST'
+  ) {
+    let body = ''
+
+    req.on('data', (chunk) => {
+      body += chunk
+    })
+
+    req.on('end', () => {
+      try {
+        const video = JSON.parse(body)
+
+        if (!video.url) {
+          res.statusCode = 400
+
+          res.end(
+            JSON.stringify({
+              error:
+                'Video URL is required',
+            })
+          )
+
+          return
+        }
+
+        activatePendingVideosIfDue()
+
+        if (!lastPlaybackState) {
+          res.statusCode = 400
+
+          res.end(
+            JSON.stringify({
+              error:
+                'No playback state available yet',
+            })
+          )
+
+          return
+        }
+
+        const nextId =
+          Math.max(
+            ...playlist.map(
+              (item) => Number(item.id) || 0
+            ),
+            ...pendingVideos.map(
+              (item) =>
+                Number(item.video.id) || 0
+            )
+          ) + 1
+
+        const newVideo = {
+          id: nextId,
+          title:
+            video.title ||
+            `Video ${nextId}`,
+          url: video.url,
+        }
+
+        const currentCommonPosition =
+          lastPlaybackState.commonPosition
+
+        const currentPlaylistDuration =
+          lastPlaybackState.playlistTotalDuration
+
+        if (
+          !Number.isFinite(
+            currentPlaylistDuration
+          ) ||
+          currentPlaylistDuration <= 0
+        ) {
+          res.statusCode = 400
+
+          res.end(
+            JSON.stringify({
+              error:
+                'Invalid current playlist duration',
+            })
+          )
+
+          return
+        }
+
+        // Add the new video after the CURRENT
+        // playlist cycle finishes.
+        const cyclesCompleted =
+          Math.floor(
+            currentCommonPosition /
+              currentPlaylistDuration
+          )
+
+        const activationCommonPosition =
+          (cyclesCompleted + 1) *
+          currentPlaylistDuration
+
+        pendingVideos.push({
+          video: newVideo,
+          activationCommonPosition,
+          addedAtCommonPosition:
+            currentCommonPosition,
+        })
+
+        saveState()
+
+        console.log(
+          'VIDEO SCHEDULED:',
+          {
+            video: newVideo,
+            currentCommonPosition,
+            currentPlaylistDuration,
+            activationCommonPosition,
+          }
+        )
+
+        res.end(
+          JSON.stringify({
+            success: true,
+
+            activePlaylist: playlist,
+
+            pendingVideos,
+
+            video: newVideo,
+
+            activationCommonPosition,
+          })
+        )
+      } catch (error) {
+        res.statusCode = 400
+
+        res.end(
+          JSON.stringify({
+            error: 'Invalid JSON',
+          })
+        )
+      }
+    })
+
+    return
+  }
+
+  // ------------------------------------------------------------
+  // STOP STREAMING
+  // ------------------------------------------------------------
+
   if (
     req.url === '/stream/stop' &&
     req.method === 'POST'
@@ -188,7 +500,9 @@ const server = http.createServer((req, res) => {
 
     saveState()
 
-    console.log('STREAMING STOPPED')
+    console.log(
+      'STREAMING STOPPED'
+    )
 
     res.end(
       JSON.stringify({
@@ -200,7 +514,10 @@ const server = http.createServer((req, res) => {
     return
   }
 
-  // Start streaming
+  // ------------------------------------------------------------
+  // START STREAMING
+  // ------------------------------------------------------------
+
   if (
     req.url === '/stream/start' &&
     req.method === 'POST'
@@ -209,7 +526,9 @@ const server = http.createServer((req, res) => {
 
     saveState()
 
-    console.log('STREAMING STARTED')
+    console.log(
+      'STREAMING STARTED'
+    )
 
     res.end(
       JSON.stringify({
@@ -220,6 +539,10 @@ const server = http.createServer((req, res) => {
 
     return
   }
+
+  // ------------------------------------------------------------
+  // NOT FOUND
+  // ------------------------------------------------------------
 
   res.statusCode = 404
 
